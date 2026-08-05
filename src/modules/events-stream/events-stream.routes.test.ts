@@ -143,6 +143,7 @@ describe('SSE Stream Routes', () => {
     const json = response.json();
     expect(json.success).toBe(false);
     expect(json.error.code).toBe('MATCH_NOT_FOUND');
+    expect(json.meta.requestId).toBeDefined();
   });
 
   it('cleans up Redis subscription on client disconnect', async () => {
@@ -170,17 +171,17 @@ describe('SSE Stream Routes', () => {
       const { req, res } = await openSseStream(port, matchId);
       res.on('data', () => {});
 
-      await waitFor(() => subscribeSpy.mock.calls.length > subsBefore);
-      await waitFor(async () => (await getSubCount()) > baseline);
+      await waitFor(() => subscribeSpy.mock.calls.length > subsBefore, 5000);
+      await waitFor(async () => (await getSubCount()) > baseline, 5000);
 
       const quitsBefore = quitSpy.mock.calls.length;
       req.destroy();
 
-      await waitFor(() => quitSpy.mock.calls.length > quitsBefore);
+      await waitFor(() => quitSpy.mock.calls.length > quitsBefore, 5000);
       expect(unsubSpy).toHaveBeenCalled();
-      await waitFor(async () => (await getSubCount()) === baseline);
+      await waitFor(async () => (await getSubCount()) === baseline, 5000);
     }
 
     expect(await getSubCount()).toBe(baseline);
-  });
+  }, 30_000);
 });

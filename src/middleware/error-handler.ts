@@ -16,6 +16,13 @@ export function setupErrorHandler(app: any) {
         .send(buildError('VALIDATION_ERROR', 'Invalid request payload', requestId));
     }
 
+    // Fastify JSON-schema validation (from OpenAPI route schemas)
+    if (error.validation || error.code === 'FST_ERR_VALIDATION') {
+      return reply
+        .status(400)
+        .send(buildError('VALIDATION_ERROR', 'Invalid request payload', requestId));
+    }
+
     if (error instanceof AppError) {
       return reply.status(error.statusCode).send(buildError(error.code, error.message, requestId));
     }

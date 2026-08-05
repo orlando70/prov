@@ -3,13 +3,22 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { eventGenerator, ScheduledEvent } from './event-generator';
 
+export type FullTimeHandler = (engine: MatchEngine) => void | Promise<void>;
+
 export class MatchEngine {
   private match: Match;
   private scheduledEvents: ScheduledEvent[] = [];
   private isTicking: boolean = false;
+  private halfTimeTimer?: NodeJS.Timeout;
+  private onFullTime?: FullTimeHandler;
 
-  constructor(match: Match) {
+  constructor(match: Match, onFullTime?: FullTimeHandler) {
     this.match = match;
+    this.onFullTime = onFullTime;
+  }
+
+  getMatch(): Match {
+    return this.match;
   }
 
   async start() {
@@ -18,7 +27,6 @@ export class MatchEngine {
     await this.updateStatus('FIRST_HALF');
     this.isTicking = true;
 
-    // Optional: write startedAt to DB here.
     await prisma.match.update({
       where: { id: this.match.id },
       data: { startedAt: new Date() },
@@ -31,13 +39,18 @@ export class MatchEngine {
     if (this.match.status === 'FIRST_HALF' && this.match.minute >= 45) {
       await this.updateStatus('HALF_TIME');
       this.isTicking = false;
-      setTimeout(() => this.resumeHalfTime(), 5000); // 5s half time
+      this.halfTimeTimer = setTimeout(() => {
+        void this.resumeHalfTime();
+      }, 5000);
       return;
     }
 
     if (this.match.status === 'SECOND_HALF' && this.match.minute >= 90) {
       await this.updateStatus('FULL_TIME');
       this.isTicking = false;
+      if (this.onFullTime) {
+        await this.onFullTime(this);
+      }
       return;
     }
 
@@ -117,7 +130,16 @@ export class MatchEngine {
     }
   }
 
+  stop() {
+    if (this.halfTimeTimer) {
+      clearTimeout(this.halfTimeTimer);
+      this.halfTimeTimer = undefined;
+    }
+    this.isTicking = false;
+  }
+
   private async resumeHalfTime() {
+    this.halfTimeTimer = undefined;
     await this.updateStatus('SECOND_HALF');
     this.isTicking = true;
   }

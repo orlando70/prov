@@ -7,11 +7,16 @@ import { AppError } from '../../utils/errors';
 
 let io: Server;
 
+function socketCorsOrigin(): boolean | string | string[] {
+  if (!env.CORS_ORIGIN || env.CORS_ORIGIN === '*') return true;
+  return env.CORS_ORIGIN;
+}
+
 // any: Fastify's logger generic makes the concrete app instance incompatible with FastifyInstance
 export function setupSocketServer(app: any): Server {
   io = new Server(app.server, {
     cors: {
-      origin: env.CORS_ORIGIN,
+      origin: socketCorsOrigin(),
       methods: ['GET', 'POST'],
     },
     pingInterval: 25000,

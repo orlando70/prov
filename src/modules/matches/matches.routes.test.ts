@@ -64,7 +64,7 @@ describe('Matches Routes', () => {
       minute: 10,
       status: MatchStatus.FIRST_HALF,
       events: [],
-      statistics: null
+      statistics: null,
     };
     vi.spyOn(matchesService, 'getMatch').mockResolvedValue(mockMatch as any);
 
@@ -83,7 +83,7 @@ describe('Matches Routes', () => {
     vi.spyOn(matchesService, 'getMatch').mockRejectedValue({
       statusCode: 404,
       code: 'MATCH_NOT_FOUND',
-      message: 'Match not found'
+      message: 'Match not found',
     });
 
     const response = await app.inject({

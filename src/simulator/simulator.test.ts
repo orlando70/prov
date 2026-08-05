@@ -140,4 +140,51 @@ describe('Simulator & Event Generator', () => {
     expect(match.status).toBe(MatchStatus.FULL_TIME);
     expect((engine as any).isTicking).toBe(false);
   });
+
+  it('queues a fresh NOT_STARTED match after FULL_TIME', async () => {
+    const finishedMatch = {
+      id: 'm_ft',
+      status: MatchStatus.SECOND_HALF,
+      minute: 90,
+      homeScore: 1,
+      awayScore: 0,
+      homeTeamId: 'team-home',
+      awayTeamId: 'team-away',
+    } as any;
+
+    const nextMatch = {
+      id: 'm_next',
+      status: MatchStatus.NOT_STARTED,
+      minute: 0,
+      homeScore: 0,
+      awayScore: 0,
+      homeTeamId: 'team-home',
+      awayTeamId: 'team-away',
+    } as any;
+
+    const createSpy = vi.spyOn(prisma.match, 'create').mockResolvedValue(nextMatch);
+    vi.spyOn(prisma.matchStatistic, 'createMany').mockResolvedValue({ count: 2 } as any);
+    vi.spyOn(prisma.match, 'update').mockResolvedValue(finishedMatch);
+
+    const engine = new MatchEngine(finishedMatch, (e) => (simulator as any).handleFullTime(e));
+    vi.spyOn(engine as any, 'broadcast').mockResolvedValue(undefined);
+    (engine as any).isTicking = true;
+    (engine as any).scheduledEvents = [];
+    (simulator as any).engines = [engine];
+    (simulator as any).startTimers = [];
+
+    await engine.tick();
+
+    expect(finishedMatch.status).toBe(MatchStatus.FULL_TIME);
+    expect(createSpy).toHaveBeenCalledWith({
+      data: { homeTeamId: 'team-home', awayTeamId: 'team-away' },
+    });
+    expect((simulator as any).engines[0]).not.toBe(engine);
+    expect((simulator as any).engines[0].getMatch().id).toBe('m_next');
+    expect((simulator as any).engines[0].getMatch().status).toBe(MatchStatus.NOT_STARTED);
+    expect((simulator as any).startTimers.length).toBe(1);
+
+    // Clean pending restart timer
+    simulator.stop();
+  });
 });

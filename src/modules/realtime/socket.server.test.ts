@@ -149,6 +149,36 @@ describe('Socket Server', () => {
     expect(client2GotStats).toBe(false);
   });
 
+  it('broadcasts match:status_change to subscribed clients only', async () => {
+    client1.emit('match:subscribe', { matchId: MATCH_ID });
+    await waitFor(async () => {
+      const sockets = await getSocketServer().in(`match:${MATCH_ID}`).fetchSockets();
+      return sockets.length === 1;
+    });
+
+    let client2GotStatus = false;
+    client2.on('match:status_change', () => {
+      client2GotStatus = true;
+    });
+
+    const statusPromise = onceEvent<{ matchId: string; status: string }>(
+      client1,
+      'match:status_change'
+    );
+
+    await redis.publish(
+      `match:${MATCH_ID}:events`,
+      JSON.stringify({
+        kind: 'STATUS',
+        data: 'FIRST_HALF',
+      })
+    );
+
+    const payload = await statusPromise;
+    expect(payload).toEqual({ matchId: MATCH_ID, status: 'FIRST_HALF' });
+    expect(client2GotStatus).toBe(false);
+  });
+
   it('handles connection cleanup on disconnect', async () => {
     const io = getSocketServer();
     const roomKey = `match:${MATCH_ID}`;

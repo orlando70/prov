@@ -56,10 +56,7 @@ describe('Chat Gateway', () => {
     client1 = Client(`http://localhost:${port}`, { auth: { userId: 'user-1' } });
     client2 = Client(`http://localhost:${port}`, { auth: { userId: 'user-2' } });
 
-    await Promise.all([
-      onceEvent(client1, 'connect'),
-      onceEvent(client2, 'connect'),
-    ]);
+    await Promise.all([onceEvent(client1, 'connect'), onceEvent(client2, 'connect')]);
   });
 
   afterEach(() => {
@@ -79,7 +76,10 @@ describe('Chat Gateway', () => {
     const joinEvent2 = await joinPromise2;
     expect(joinEvent2.userCount).toBe(2);
 
-    const leavePromise = onceEvent<{ userCount: number; userId: string }>(client2, 'chat:user_left');
+    const leavePromise = onceEvent<{ userCount: number; userId: string }>(
+      client2,
+      'chat:user_left'
+    );
     client1.emit('chat:leave', { matchId: MATCH_ID });
     const leaveEvent = await leavePromise;
     expect(leaveEvent.userCount).toBe(1);
@@ -159,7 +159,10 @@ describe('Chat Gateway', () => {
     client2.emit('chat:join', { matchId: MATCH_ID, username: 'Bob' });
     expect((await bobJoined).userCount).toBe(1);
 
-    const aliceJoined = onceEvent<{ userCount: number; userId: string }>(client2, 'chat:user_joined');
+    const aliceJoined = onceEvent<{ userCount: number; userId: string }>(
+      client2,
+      'chat:user_joined'
+    );
     client1.emit('chat:join', { matchId: MATCH_ID, username: 'Alice' });
     const firstAliceJoin = await aliceJoined;
     expect(firstAliceJoin.userId).toBe('user-1');

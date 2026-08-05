@@ -1,20 +1,20 @@
 # ProFootball Real-time Match API
 
-A Node.js backend for simulating and streaming live football matches. It uses Fastify, Socket.IO, Prisma, PostgreSQL, and Redis.
+A Node.js backend for simulating and streaming live football matches. Fastify + Socket.IO + Prisma + PostgreSQL + Redis.
 
 ## Features
 
-- **Match Simulator**: A background engine runs concurrent football matches. It transitions match states (halves, full-time) and generates goals, fouls, and cards in real-time.
-- **Real-time Core**: Fastify broadcasts simulator events to connected clients via Socket.IO.
-- **Server-Sent Events (SSE)**: An HTTP stream provides live match events and supports reconnection (`Last-Event-ID`) using Prisma to fetch missed events.
-- **Live Chat**: Users join match-specific Socket.IO rooms to chat. The API handles typing indicators, tracks active user counts using Redis hashes, and enforces rate limits.
-- **REST API**: HTTP endpoints list matches and return chronological event histories.
+- **Match Simulator**: Concurrent matches with staggered kickoffs. On `FULL_TIME`, a fresh fixture is queued so the deploy never goes idle.
+- **Real-time Core**: Simulator publishes to Redis; Socket.IO and SSE consume that channel.
+- **SSE**: Live match events with `Last-Event-ID` replay.
+- **Live Chat**: Room-scoped chat with typing indicators, presence counts, and rate limits.
+- **REST + OpenAPI**: List/detail endpoints; interactive docs at `/docs`.
 
 ## Setup
 
 ### Prerequisites
-- Node.js 20+
-- PostgreSQL (e.g., Supabase)
+- Node.js 20+ (pinned via `.nvmrc` / `engines`)
+- PostgreSQL
 - Redis
 
 ### Install & Configure
@@ -24,79 +24,103 @@ A Node.js backend for simulating and streaming live football matches. It uses Fa
    npm install
    ```
 
-2. Configure environment variables:
+2. Configure environment:
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` to include your database and Redis URLs. If you use Supabase or a connection pooler, set `DATABASE_URL` to your transaction pooler (port 6543) and `DIRECT_URL` to the session pooler (port 5432) for migrations.
+   Set `DATABASE_URL` and `REDIS_URL`. If you use Supabase/pgBouncer, set `DATABASE_URL` to the transaction pooler and `DIRECT_URL` to the session URL for migrations/seed.
 
-3. Push the schema and seed the database:
+3. Migrate and seed:
    ```bash
-   npx prisma db push
-   npm run build
+   npx prisma migrate deploy
    npx tsx scripts/seed.ts
    ```
 
-4. Start the server:
+4. Start:
    ```bash
-   # Watch mode for local development
-   npm run dev
-
-   # Production
-   npm run build
-   npm start
+   npm run dev          # watch mode
+   npm run build && npm start
    ```
 
 ### Development Commands
-- **Run tests:** `npm run test`
-- **Lint code:** `npm run lint`
-- **Format code:** `npm run format`
+- `npm test` — Vitest suite
+- `npm run lint` — ESLint + Prettier
+- `npm run typecheck` — `tsc --noEmit`
+- `npm run format` — Prettier write
+
+Interactive REST docs: [http://localhost:3000/docs](http://localhost:3000/docs) once the server is running.
 
 ## Architecture decisions
 
-- **Pub/Sub isolates the simulator.** The match engine runs in the background. It writes to Postgres and publishes events to Redis. The Fastify API nodes only consume from Redis to feed Socket.IO and SSE. This means you can horizontally scale the API nodes without duplicating simulator logic.
-- **In-memory debouncing for typing.** Typing indicators are highly ephemeral. The Socket.IO gateway tracks timeouts in memory instead of writing them to Redis, saving database calls.
-- **Prisma 7 split configuration.** The project uses Prisma 7. Database URLs live in `prisma.config.ts`, keeping `schema.prisma` strictly for data modeling. It uses `@prisma/adapter-pg` to route queries through the standard `pg` driver, which prevents connection dropping with Supabase's pgBouncer pooler.
-- **Redis Hash for connection tracking.** A single user might open multiple browser tabs. The chat service tracks socket counts per user in a Redis Hash (`chat:matchId:users`). The API only broadcasts "user joined" or "user left" when the user's total socket count changes to 1 or 0.
+- **Redis pub/sub as the decoupling layer.** The simulator never talks to Socket.IO or SSE directly. It writes Postgres and publishes to `match:{id}:events`. Delivery mechanisms are dumb consumers of that channel — adding another fan-out later is cheap, and the same design is what you'd wire to a Socket.IO Redis adapter for horizontal scale.
+- **Socket.IO over raw `ws`.** Rooms, heartbeats (`pingInterval`/`pingTimeout`), and reconnect semantics come built-in. Reimplementing those for a take-home would be pure cost; Socket.IO still speaks WebSocket under the hood.
+- **CORS is env-configurable and defaults permissively (`*`).** Locking origins tightly is correct production practice, but this API must be reachable by HTTP client tools, real-time client tools, an internal test frontend, and automated scripts whose origins we don't control. The permissive default is a deliberate, documented trade-off for gradability — set `CORS_ORIGIN` to a specific origin when you deploy for real.
+- **In-memory typing debounce.** Typing is ephemeral; timers live on the gateway that owns the socket. Broadcast still goes through Socket.IO rooms.
+- **Redis Hash for multi-tab presence.** `chat:{matchId}:users` tracks socket counts per `userId` so duplicate tabs don't double-count joins/leaves.
+- **Prisma 7.** URLs live in `prisma.config.ts`; `@prisma/adapter-pg` talks through `pg` for pooler-friendly connections.
 
 ## API Contract
 
 ### REST
-- `GET /api/matches`
-  - Query Params: `status` (optional), `limit` (default: 20), `offset` (default: 0).
-  - Returns matches without nested events.
-- `GET /api/matches/:id`
-  - Returns the match, its chronological events, statistics, and participating teams.
+OpenAPI UI: `/docs`
+
+- `GET /api/matches` — query: `status?`, `limit` (default 20), `offset` (default 0). Teams, score, minute, status. Envelope: `{ success, data, meta.requestId }`.
+- `GET /api/matches/:id` — full match with chronological `events[]` and `statistics[]`. `400 VALIDATION_ERROR` for bad UUID; `404 MATCH_NOT_FOUND`.
+- `GET /health` — checks Postgres + Redis; `503` if either is down.
+
+All error responses use `{ success: false, error: { code, message }, meta: { requestId } }`.
 
 ### Socket.IO
-Clients connect to `/` and emit events. The server broadcasts updates.
+Connect to `/`. Heartbeat: `pingInterval` 25s, `pingTimeout` 20s.
 
 **Client → Server**
-- `match:subscribe { matchId }`
-- `match:unsubscribe { matchId }`
-- `chat:join { matchId, username }`
-- `chat:leave { matchId }`
-- `chat:message { matchId, message }`
-- `chat:typing:start { matchId }`
-- `chat:typing:stop { matchId }`
+| Event | Payload | Notes |
+|-------|---------|-------|
+| `match:subscribe` | `{ matchId: uuid }` | Join `match:{id}` room |
+| `match:unsubscribe` | `{ matchId: uuid }` | Leave room |
+| `chat:join` | `{ matchId, username }` | Presence; `userId` from handshake auth / generated |
+| `chat:leave` | `{ matchId }` | |
+| `chat:message` | `{ matchId, message }` | Trimmed, max length enforced; rate-limited per `userId` |
+| `chat:typing:start` | `{ matchId }` | |
+| `chat:typing:stop` | `{ matchId }` | |
+
+Malformed payloads → `error { code: "INVALID_PAYLOAD", message }` and the connection stays open.
+Rate limit exceeded → `error { code: "RATE_LIMIT_EXCEEDED", message }`.
 
 **Server → Client**
-- `match:score_update { matchId, homeScore, awayScore, minute }`
-- `match:event { matchId, event }`
-- `match:stats_update { matchId, statistics }`
-- `match:status_change { matchId, status }`
-- `chat:message { matchId, id, userId, username, message, createdAt }`
-- `chat:user_joined { matchId, userId, username, userCount }`
-- `chat:user_left { matchId, userId, username, userCount }`
-- `chat:typing { matchId, userId, username, isTyping }`
-- `error { code, message }`
+| Event | Payload |
+|-------|---------|
+| `match:score_update` | `{ matchId, homeScore, awayScore, minute }` |
+| `match:event` | `{ matchId, event }` |
+| `match:stats_update` | `{ matchId, statistics }` |
+| `match:status_change` | `{ matchId, status }` |
+| `chat:message` | `{ matchId, id, userId, username, message, createdAt }` |
+| `chat:user_joined` / `chat:user_left` | `{ matchId, userId, username, userCount }` |
+| `chat:typing` | `{ matchId, userId, username, isTyping }` |
+| `error` | `{ code, message }` |
 
 ### Server-Sent Events (SSE)
-- `GET /api/matches/:id/events/stream`
-  - Streams `match_event` types.
-  - Replays missed events if the client sends a `Last-Event-ID` header.
-  - Sends a `heartbeat` event every 15 seconds to keep the connection alive.
+`GET /api/matches/:id/events/stream`
 
-## Known limits
-- Typing indicator debouncing relies on single-node memory. If clients connect to different API nodes behind a load balancer, typing events will not sync across nodes.
-- Chat rate limits use a fixed-window approach in Redis (`INCR` + `PEXPIRE`), which allows request bursts at window boundaries.
+- Streams `event: match_event` with `id: {seq}` and JSON body of the `MatchEvent`.
+- Reconnect: send `Last-Event-ID: {seq}`; server replays `seq > last`, then attaches to the live Redis subscription (no duplicates).
+- `event: heartbeat` every 15s.
+- Pre-stream errors (bad UUID / missing match) return the normal JSON error envelope (`400` / `404`).
+- Mid-stream replay failure emits `event: error` then closes.
+
+## Known limitations
+
+- **Single-instance Socket.IO.** There is no Redis adapter yet, so sticky sessions (or a single node) are required for socket affinity. Redis pub/sub already decouples the simulator, so adding `@socket.io/redis-adapter` is the natural next step for horizontal scale.
+- **Typing indicators are in-memory** on the node that owns the socket — they won't sync across nodes without the adapter (or moving timers to Redis).
+- **Chat rate limits** use a fixed Redis window (`INCR` + `PEXPIRE`), which allows bursts at window boundaries.
+- **Brief Redis/Postgres blips:** ioredis reconnects via `retryStrategy`. A hard DB outage mid-tick surfaces as logged engine errors; the process stays up. Full automatic Prisma reconnect/circuit-breaking is not implemented.
+
+## Beyond this assessment's scope
+
+For a long-lived production system I'd add: APM/tracing (OpenTelemetry), alerting on `/health` and error rates, the Socket.IO Redis adapter for multi-node fan-out (the pub/sub design already sets this up), blue/green or rolling deploys with drain on `SIGTERM`, and structured log shipping with request/socket correlation IDs end-to-end.
+
+## Security notes
+
+- `npm audit` currently reports **0** vulnerabilities in direct dependencies.
+- Fastify `bodyLimit` is 1MB; `trustProxy` is enabled for Railway/reverse-proxy deployments.
+- Chat rate limits are keyed on `userId`, not `socket.id`, so reconnecting does not reset the window.

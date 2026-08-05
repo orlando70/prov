@@ -4,3 +4,4 @@ dist/
 *.log
 audit.md
 spec.md
+findings.md

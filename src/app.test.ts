@@ -24,4 +24,12 @@ describe('App', () => {
     expect(json.success).toBe(true);
     expect(json.data.status).toBe('ok');
   });
+
+  it('serves OpenAPI docs at /docs', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/docs',
+    });
+    expect(response.statusCode).toBe(200);
+  });
 });

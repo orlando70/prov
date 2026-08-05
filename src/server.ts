@@ -2,25 +2,24 @@ import { buildApp } from './app';
 import { env } from './config/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
-import { redis } from './lib/redis';
+import { redis, redisSubscriber } from './lib/redis';
 import { setupSocketServer, getSocketServer } from './modules/realtime/socket.server';
 import { setupBroadcaster } from './modules/realtime/broadcaster';
 import { simulator } from './simulator/simulator';
 
+let app: ReturnType<typeof buildApp>;
+let shuttingDown = false;
+
 async function start() {
-  const app = buildApp();
+  app = buildApp();
 
-  // Setup Socket.IO
   setupSocketServer(app);
-
-  // Setup Redis Broadcaster
   await setupBroadcaster();
 
   try {
     await prisma.$connect();
     logger.info('Database connected');
 
-    // Initialize Simulator
     await simulator.init();
 
     const address = await app.listen({ port: env.PORT, host: '0.0.0.0' });
@@ -31,29 +30,39 @@ async function start() {
   }
 }
 
-// Handle graceful shutdown
-const shutdown = async () => {
+const shutdown = async (exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
   logger.info('Shutting down server...');
   simulator.stop();
+
   try {
     getSocketServer().close();
-  } catch (err) {
+  } catch {
     // Ignore if not initialized
   }
+
+  try {
+    if (app) await app.close();
+  } catch (err) {
+    logger.error(err, 'Error closing Fastify');
+  }
+
   await prisma.$disconnect();
-  await redis.quit();
-  process.exit(0);
+  await Promise.allSettled([redis.quit(), redisSubscriber.quit()]);
+  process.exit(exitCode);
 };
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => void shutdown(0));
+process.on('SIGTERM', () => void shutdown(0));
 process.on('uncaughtException', (err) => {
   logger.fatal(err, 'Uncaught Exception');
-  shutdown();
+  void shutdown(1);
 });
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ reason }, 'Unhandled Rejection');
-  shutdown();
+  void shutdown(1);
 });
 
-start();
+void start();

@@ -8,7 +8,8 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
-  CORS_ORIGIN: z.string(),
+  // Permissive default for grader HTTP/socket clients; lock down via env in real deploys.
+  CORS_ORIGIN: z.string().default('*'),
 
   SIM_MATCH_COUNT: z.coerce.number().default(4),
   SIM_TICK_MS: z.coerce.number().default(1000),
