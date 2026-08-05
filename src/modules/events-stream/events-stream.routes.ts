@@ -12,11 +12,13 @@ export const eventsStreamRoutes: FastifyPluginAsync = async (app: FastifyInstanc
   app.get('/:id/events/stream', async (request: FastifyRequest, reply: FastifyReply) => {
     const params = getMatchStreamParamsSchema.parse(request.params);
     const matchId = params.id;
-    
+
     // Check if match exists
     const match = await prisma.match.findUnique({ where: { id: matchId } });
     if (!match) {
-      reply.status(404).send({ success: false, error: { code: 'MATCH_NOT_FOUND', message: 'Match not found' } });
+      reply
+        .status(404)
+        .send({ success: false, error: { code: 'MATCH_NOT_FOUND', message: 'Match not found' } });
       return;
     }
 
@@ -28,7 +30,7 @@ export const eventsStreamRoutes: FastifyPluginAsync = async (app: FastifyInstanc
     const headerValue = request.headers['last-event-id'];
     const lastEventId = Array.isArray(headerValue) ? headerValue[0] : headerValue;
     let lastSeq = lastEventId ? parseInt(lastEventId, 10) : 0;
-    
+
     if (isNaN(lastSeq)) {
       lastSeq = 0;
     }
@@ -51,9 +53,9 @@ export const eventsStreamRoutes: FastifyPluginAsync = async (app: FastifyInstanc
     // Subscribe to redis for this specific match
     const client = new Redis(env.REDIS_URL);
     const channel = `match:${matchId}:events`;
-    
+
     await client.subscribe(channel);
-    
+
     client.on('message', (chan, message) => {
       if (chan === channel) {
         try {
@@ -75,14 +77,22 @@ export const eventsStreamRoutes: FastifyPluginAsync = async (app: FastifyInstanc
       reply.raw.write(`event: heartbeat\ndata: {}\n\n`);
     }, 15000);
 
-    // Cleanup on disconnect
-    request.raw.on('close', () => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
       clearInterval(heartbeatInterval);
-      client.unsubscribe(channel);
-      client.quit();
-    });
+      void client.unsubscribe(channel).finally(() => {
+        void client.quit();
+      });
+    };
+
+    // request.raw and the socket both fire on client disconnect; guard with `cleaned`
+    request.raw.on('close', cleanup);
+    request.raw.on('error', cleanup);
+    reply.raw.on('close', cleanup);
 
     // To prevent Fastify from closing the connection immediately
-    return reply; 
+    return reply;
   });
 };

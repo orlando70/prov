@@ -1,28 +1,27 @@
-import { Match, MatchStatus, MatchStatistic } from '@prisma/client';
+import { Match, MatchStatus, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { eventGenerator, ScheduledEvent } from './event-generator';
-import { logger } from '../lib/logger';
 
 export class MatchEngine {
   private match: Match;
   private scheduledEvents: ScheduledEvent[] = [];
   private isTicking: boolean = false;
-  
+
   constructor(match: Match) {
     this.match = match;
   }
 
   async start() {
     this.scheduledEvents = eventGenerator.generateMatchEvents();
-    
+
     await this.updateStatus('FIRST_HALF');
     this.isTicking = true;
-    
+
     // Optional: write startedAt to DB here.
     await prisma.match.update({
       where: { id: this.match.id },
-      data: { startedAt: new Date() }
+      data: { startedAt: new Date() },
     });
   }
 
@@ -43,17 +42,78 @@ export class MatchEngine {
     }
 
     this.match.minute += 1;
-    await prisma.match.update({ where: { id: this.match.id }, data: { minute: this.match.minute } });
-    
+
     const eventsNow = [
-      ...this.scheduledEvents.filter(e => e.minute === this.match.minute),
-      ...eventGenerator.generateContinuousEvents(this.match.minute, false)
+      ...this.scheduledEvents.filter((e) => e.minute === this.match.minute),
+      ...eventGenerator.generateContinuousEvents(this.match.minute, false),
     ];
 
+    const broadcasts: { kind: string; data: unknown }[] = [];
+
+    await prisma.$transaction(async (tx) => {
+      let homeScore = this.match.homeScore;
+      let awayScore = this.match.awayScore;
+
+      for (const evt of eventsNow) {
+        const isHome = Math.random() > 0.5;
+        const teamId = isHome ? this.match.homeTeamId : this.match.awayTeamId;
+
+        if (evt.type === 'GOAL') {
+          if (isHome) homeScore++;
+          else awayScore++;
+        }
+
+        const recorded = await tx.matchEvent.create({
+          data: {
+            matchId: this.match.id,
+            minute: this.match.minute,
+            type: evt.type,
+            teamId,
+          },
+        });
+        broadcasts.push({ kind: 'EVENT', data: recorded });
+
+        const updateData: Prisma.MatchStatisticUpdateInput = {};
+        if (evt.type === 'GOAL' || evt.type === 'SHOT') {
+          updateData.shotsTotal = { increment: 1 };
+          if (evt.type === 'GOAL') updateData.shotsOnTarget = { increment: 1 };
+          else if (Math.random() > 0.5) updateData.shotsOnTarget = { increment: 1 };
+        } else if (evt.type === 'FOUL') {
+          updateData.fouls = { increment: 1 };
+        } else if (evt.type === 'YELLOW_CARD') {
+          updateData.yellowCards = { increment: 1 };
+        } else if (evt.type === 'RED_CARD') {
+          updateData.redCards = { increment: 1 };
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          await tx.matchStatistic.update({
+            where: { matchId_teamId: { matchId: this.match.id, teamId } },
+            data: updateData,
+          });
+        }
+      }
+
+      this.match.homeScore = homeScore;
+      this.match.awayScore = awayScore;
+
+      await tx.match.update({
+        where: { id: this.match.id },
+        data: {
+          minute: this.match.minute,
+          homeScore: this.match.homeScore,
+          awayScore: this.match.awayScore,
+        },
+      });
+    });
+
+    for (const b of broadcasts) {
+      await this.broadcast(b.kind, b.data);
+    }
+
+    await this.broadcastScore();
     if (eventsNow.length > 0) {
-      await this.processEvents(eventsNow);
-    } else {
-      await this.broadcastScore(); // always broadcast score/minute if ticked
+      await this.broadcastStats();
     }
   }
 
@@ -68,79 +128,11 @@ export class MatchEngine {
     await this.broadcast('STATUS', status);
   }
 
-  private async processEvents(events: ScheduledEvent[]) {
-    let homeScoreChanged = false;
-    let awayScoreChanged = false;
-
-    for (const evt of events) {
-      const isHome = Math.random() > 0.5;
-      const teamId = isHome ? this.match.homeTeamId : this.match.awayTeamId;
-
-      if (evt.type === 'GOAL') {
-        if (isHome) {
-          this.match.homeScore++;
-          homeScoreChanged = true;
-        } else {
-          this.match.awayScore++;
-          awayScoreChanged = true;
-        }
-      }
-
-      // Record event to DB
-      const recorded = await prisma.matchEvent.create({
-        data: {
-          matchId: this.match.id,
-          minute: this.match.minute,
-          type: evt.type,
-          teamId,
-        }
-      });
-
-      // Update statistics
-      await this.updateStatistics(teamId, evt.type);
-
-      // Broadcast event
-      await this.broadcast('EVENT', recorded);
-    }
-
-    if (homeScoreChanged || awayScoreChanged) {
-      await prisma.match.update({
-        where: { id: this.match.id },
-        data: { homeScore: this.match.homeScore, awayScore: this.match.awayScore }
-      });
-    }
-
-    await this.broadcastScore();
-    await this.broadcastStats();
-  }
-
-  private async updateStatistics(teamId: string, eventType: string) {
-    const updateData: any = {};
-    if (eventType === 'GOAL' || eventType === 'SHOT') {
-      updateData.shotsTotal = { increment: 1 };
-      if (eventType === 'GOAL') updateData.shotsOnTarget = { increment: 1 };
-      else if (Math.random() > 0.5) updateData.shotsOnTarget = { increment: 1 };
-    } else if (eventType === 'FOUL') {
-      updateData.fouls = { increment: 1 };
-    } else if (eventType === 'YELLOW_CARD') {
-      updateData.yellowCards = { increment: 1 };
-    } else if (eventType === 'RED_CARD') {
-      updateData.redCards = { increment: 1 };
-    }
-
-    if (Object.keys(updateData).length > 0) {
-      await prisma.matchStatistic.update({
-        where: { matchId_teamId: { matchId: this.match.id, teamId } },
-        data: updateData
-      });
-    }
-  }
-
   private async broadcastScore() {
     await this.broadcast('SCORE', {
       homeScore: this.match.homeScore,
       awayScore: this.match.awayScore,
-      minute: this.match.minute
+      minute: this.match.minute,
     });
   }
 
@@ -149,7 +141,7 @@ export class MatchEngine {
     await this.broadcast('STATS', stats);
   }
 
-  private async broadcast(kind: string, data: any) {
+  private async broadcast(kind: string, data: unknown) {
     const payload = JSON.stringify({ kind, data });
     await redis.publish(`match:${this.match.id}:events`, payload);
   }

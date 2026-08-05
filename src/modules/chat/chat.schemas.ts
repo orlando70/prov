@@ -12,7 +12,11 @@ export const chatLeaveSchema = z.object({
 
 export const chatMessageSchema = z.object({
   matchId: z.string().uuid(),
-  message: z.string().trim().min(1).max(env.CHAT_MAX_MESSAGE_LENGTH),
+  message: z
+    .string()
+    // eslint-disable-next-line no-control-regex
+    .transform((val) => val.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim())
+    .pipe(z.string().min(1).max(env.CHAT_MAX_MESSAGE_LENGTH)),
 });
 
 export const chatTypingSchema = z.object({

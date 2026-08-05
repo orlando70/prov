@@ -1,5 +1,6 @@
 import { matchesRepository } from './matches.repository';
 import { GetMatchesQuery } from './matches.schemas';
+import { AppError } from '../../utils/errors';
 
 export class MatchesService {
   async getMatches(query: GetMatchesQuery) {
@@ -9,10 +10,7 @@ export class MatchesService {
   async getMatch(id: string) {
     const match = await matchesRepository.findMatchById(id);
     if (!match) {
-      const error = new Error('Match not found');
-      (error as any).statusCode = 404;
-      (error as any).code = 'MATCH_NOT_FOUND';
-      throw error;
+      throw new AppError('Match not found', 404, 'MATCH_NOT_FOUND');
     }
     return match;
   }

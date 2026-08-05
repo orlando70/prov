@@ -1,12 +1,13 @@
 import { Server } from 'socket.io';
-import { FastifyInstance } from 'fastify';
 import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { z } from 'zod';
 import { setupChatGateway } from '../chat/chat.gateway';
+import { AppError } from '../../utils/errors';
 
 let io: Server;
 
+// any: Fastify's logger generic makes the concrete app instance incompatible with FastifyInstance
 export function setupSocketServer(app: any): Server {
   io = new Server(app.server, {
     cors: {
@@ -54,7 +55,7 @@ export function setupSocketServer(app: any): Server {
 
 export function getSocketServer() {
   if (!io) {
-    throw new Error('Socket server not initialized');
+    throw new AppError('Socket server not initialized', 500, 'SOCKET_NOT_INITIALIZED');
   }
   return io;
 }

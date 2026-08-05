@@ -47,6 +47,11 @@ A Node.js backend for simulating and streaming live football matches. It uses Fa
    npm start
    ```
 
+### Development Commands
+- **Run tests:** `npm run test`
+- **Lint code:** `npm run lint`
+- **Format code:** `npm run format`
+
 ## Architecture decisions
 
 - **Pub/Sub isolates the simulator.** The match engine runs in the background. It writes to Postgres and publishes events to Redis. The Fastify API nodes only consume from Redis to feed Socket.IO and SSE. This means you can horizontally scale the API nodes without duplicating simulator logic.

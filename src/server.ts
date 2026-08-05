@@ -3,7 +3,7 @@ import { env } from './config/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
-import { setupSocketServer } from './modules/realtime/socket.server';
+import { setupSocketServer, getSocketServer } from './modules/realtime/socket.server';
 import { setupBroadcaster } from './modules/realtime/broadcaster';
 import { simulator } from './simulator/simulator';
 
@@ -12,9 +12,9 @@ async function start() {
 
   // Setup Socket.IO
   setupSocketServer(app);
-  
+
   // Setup Redis Broadcaster
-  setupBroadcaster();
+  await setupBroadcaster();
 
   try {
     await prisma.$connect();
@@ -35,6 +35,11 @@ async function start() {
 const shutdown = async () => {
   logger.info('Shutting down server...');
   simulator.stop();
+  try {
+    getSocketServer().close();
+  } catch (err) {
+    // Ignore if not initialized
+  }
   await prisma.$disconnect();
   await redis.quit();
   process.exit(0);
@@ -42,5 +47,13 @@ const shutdown = async () => {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+process.on('uncaughtException', (err) => {
+  logger.fatal(err, 'Uncaught Exception');
+  shutdown();
+});
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ reason }, 'Unhandled Rejection');
+  shutdown();
+});
 
 start();

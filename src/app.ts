@@ -1,6 +1,9 @@
+import cors from '@fastify/cors';
 import fastify from 'fastify';
 import { env } from './config/env';
 import { logger } from './lib/logger';
+import { prisma } from './lib/prisma';
+import { redis } from './lib/redis';
 import { setupErrorHandler } from './middleware/error-handler';
 import { buildSuccess } from './utils/response';
 import { matchesRoutes } from './modules/matches/matches.routes';
@@ -14,8 +17,17 @@ export function buildApp() {
 
   setupErrorHandler(app);
 
+  app.register(cors, { origin: env.CORS_ORIGIN });
+
   app.get('/health', async (request, reply) => {
-    return reply.send(buildSuccess({ status: 'ok' }, request.id));
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      await redis.ping();
+      return reply.send(buildSuccess({ status: 'ok' }, request.id));
+    } catch (err) {
+      request.log.error(err, 'Health check failed');
+      return reply.status(503).send(buildSuccess({ status: 'error' }, request.id));
+    }
   });
 
   app.register(matchesRoutes, { prefix: '/api/matches' });

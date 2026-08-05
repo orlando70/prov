@@ -1,7 +1,11 @@
 import { Server, Socket } from 'socket.io';
-import { chatJoinSchema, chatLeaveSchema, chatMessageSchema, chatTypingSchema } from './chat.schemas';
+import {
+  chatJoinSchema,
+  chatLeaveSchema,
+  chatMessageSchema,
+  chatTypingSchema,
+} from './chat.schemas';
 import { chatService } from './chat.service';
-import { logger } from '../../lib/logger';
 import { env } from '../../config/env';
 
 // Track typing timeouts per socket memory
@@ -9,26 +13,25 @@ const typingTimers = new Map<string, NodeJS.Timeout>();
 
 export function setupChatGateway(io: Server) {
   io.on('connection', (socket: Socket) => {
-    // For simplicity, we'll use socket.id as a transient userId unless authenticated.
-    // In a real app with auth, this would be mapped to a real user id.
-    const userId = socket.id; 
-    let currentMatchId: string | null = null;
-    
+    // We'll use auth.userId if provided, else fallback to socket.id.
+    const userId = (socket.handshake.auth?.userId as string) || socket.id;
+    const joinedRooms = new Set<string>();
+
     socket.on('chat:join', async (payload) => {
       try {
         const { matchId, username } = chatJoinSchema.parse(payload);
-        currentMatchId = matchId;
-        
+        joinedRooms.add(matchId);
+
         socket.join(`chat:${matchId}`);
-        
+
         const { joined, count } = await chatService.joinUser(matchId, userId, username);
-        
+
         if (joined) {
           io.to(`chat:${matchId}`).emit('chat:user_joined', {
             matchId,
             userId,
             username,
-            userCount: count
+            userCount: count,
           });
         }
       } catch (err) {
@@ -39,18 +42,18 @@ export function setupChatGateway(io: Server) {
     socket.on('chat:leave', async (payload) => {
       try {
         const { matchId } = chatLeaveSchema.parse(payload);
-        currentMatchId = null;
-        
+        joinedRooms.delete(matchId);
+
         socket.leave(`chat:${matchId}`);
-        
+
         const { left, count, username } = await chatService.leaveUser(matchId, userId);
-        
+
         if (left) {
           io.to(`chat:${matchId}`).emit('chat:user_left', {
             matchId,
             userId,
             username,
-            userCount: count
+            userCount: count,
           });
         }
       } catch (err) {
@@ -61,19 +64,19 @@ export function setupChatGateway(io: Server) {
     socket.on('chat:message', async (payload) => {
       try {
         const { matchId, message } = chatMessageSchema.parse(payload);
-        
+
         const allowed = await chatService.checkRateLimit(userId);
         if (!allowed) {
           socket.emit('error', { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many messages' });
           return;
         }
-        
+
         // We get username from the hash.
         const user = await chatService.getUser(matchId, userId);
         const username = user?.username || 'Unknown';
-        
+
         const msg = await chatService.saveMessage(matchId, userId, username, message);
-        
+
         io.to(`chat:${matchId}`).emit('chat:message', msg);
       } catch (err) {
         socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Invalid chat message payload' });
@@ -85,7 +88,7 @@ export function setupChatGateway(io: Server) {
         const { matchId } = chatTypingSchema.parse(payload);
         const user = await chatService.getUser(matchId, userId);
         const username = user?.username || 'Unknown';
-        
+
         // Clear existing timer if any
         const timerKey = `${userId}:${matchId}`;
         if (typingTimers.has(timerKey)) {
@@ -96,21 +99,21 @@ export function setupChatGateway(io: Server) {
             matchId,
             userId,
             username,
-            isTyping: true
+            isTyping: true,
           });
         }
-        
+
         // Set new timer to auto-stop typing
         const timer = setTimeout(() => {
           socket.to(`chat:${matchId}`).emit('chat:typing', {
             matchId,
             userId,
             username,
-            isTyping: false
+            isTyping: false,
           });
           typingTimers.delete(timerKey);
         }, env.TYPING_TIMEOUT_MS);
-        
+
         typingTimers.set(timerKey, timer);
       } catch (err) {
         socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Invalid typing payload' });
@@ -122,18 +125,18 @@ export function setupChatGateway(io: Server) {
         const { matchId } = chatTypingSchema.parse(payload);
         const user = await chatService.getUser(matchId, userId);
         const username = user?.username || 'Unknown';
-        
+
         const timerKey = `${userId}:${matchId}`;
-        
+
         if (typingTimers.has(timerKey)) {
           clearTimeout(typingTimers.get(timerKey)!);
           typingTimers.delete(timerKey);
-          
+
           socket.to(`chat:${matchId}`).emit('chat:typing', {
             matchId,
             userId,
             username,
-            isTyping: false
+            isTyping: false,
           });
         }
       } catch (err) {
@@ -142,19 +145,19 @@ export function setupChatGateway(io: Server) {
     });
 
     socket.on('disconnect', async () => {
-      if (currentMatchId) {
-        const { left, count, username } = await chatService.leaveUser(currentMatchId, userId);
+      for (const matchId of joinedRooms) {
+        const { left, count, username } = await chatService.leaveUser(matchId, userId);
         if (left) {
-          io.to(`chat:${currentMatchId}`).emit('chat:user_left', {
-            matchId: currentMatchId,
+          io.to(`chat:${matchId}`).emit('chat:user_left', {
+            matchId: matchId,
             userId,
             username,
-            userCount: count
+            userCount: count,
           });
         }
-        
+
         // Clear typing timer
-        const timerKey = `${userId}:${currentMatchId}`;
+        const timerKey = `${userId}:${matchId}`;
         if (typingTimers.has(timerKey)) {
           clearTimeout(typingTimers.get(timerKey)!);
           typingTimers.delete(timerKey);

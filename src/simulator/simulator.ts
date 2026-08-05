@@ -10,7 +10,7 @@ class Simulator {
 
   async init() {
     logger.info('Initializing Match Simulator...');
-    
+
     // Find unstarted matches up to SIM_MATCH_COUNT
     const matches = await prisma.match.findMany({
       where: { status: 'NOT_STARTED' },
@@ -23,7 +23,7 @@ class Simulator {
     }
 
     this.engines = matches.map((m: Match) => new MatchEngine(m));
-    
+
     logger.info(`Initialized ${this.engines.length} match engines.`);
 
     if (simConfig.autoStart) {
@@ -35,7 +35,7 @@ class Simulator {
     if (this.intervalId) return;
 
     logger.info('Starting Match Simulator engines...');
-    
+
     for (const engine of this.engines) {
       await engine.start();
     }
@@ -47,7 +47,7 @@ class Simulator {
 
   private async tick() {
     for (const engine of this.engines) {
-      await engine.tick().catch(err => {
+      await engine.tick().catch((err) => {
         logger.error(err, 'Error in match engine tick');
       });
     }
