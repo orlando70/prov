@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { simConfig } from './config';
 import { MatchEngine } from './match-engine';
 import { logger } from '../lib/logger';
+import { Match } from '@prisma/client';
 
 class Simulator {
   private engines: MatchEngine[] = [];
@@ -21,7 +22,7 @@ class Simulator {
       return;
     }
 
-    this.engines = matches.map(m => new MatchEngine(m));
+    this.engines = matches.map((m: Match) => new MatchEngine(m));
     
     logger.info(`Initialized ${this.engines.length} match engines.`);
 
